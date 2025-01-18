@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'dart:io';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -45,6 +46,11 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
   final TextEditingController _ammorExerciceController = TextEditingController();
   final TextEditingController _valeurnetController = TextEditingController();
   final TextEditingController _imobIdController = TextEditingController();
+  final TextEditingController _dateMiseEnServiceController = TextEditingController();
+  final TextEditingController _valeurResiduelleController = TextEditingController();
+  final TextEditingController _montantAmortissableController = TextEditingController();
+  final TextEditingController _annuiteAmortissementController = TextEditingController();
+
 
   bool isLoading = false;
   String docId= '';
@@ -66,7 +72,12 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
   void initState() {
     super.initState();
     fetchImmobilisations();
-    _generateImobId(); // Générer un ImobId au chargement de la page// Appeler la fonction pour récupérer les utilisateurs au démarrage
+    _setDefaultAffectataire();
+    _generateImobId();
+    // Initialiser les champs de date avec la date du jour
+    final String today = DateFormat('dd/MM/yyyy').format(DateTime.now());
+    _dateController.text = today;
+    _dateMiseEnServiceController.text = today;// Générer un ImobId au chargement de la page// Appeler la fonction pour récupérer les utilisateurs au démarrage
   }
   Future<void> fetchImmobilisations() async {
     try {
@@ -84,11 +95,14 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
           'emplacement': doc['emplacement'] ?? '',
           'fournisseur': doc['fournisseur'] ?? '',
           'valeurOrigine': doc['valeurOrigine'] ?? '',
-          'facture': doc['facture'] ?? '',
           'affectataire': doc['affectataire'] ?? '',
           'date': doc['date'] ?? '',
+          'dateMiseEnService': doc['dateMiseEnService'] ?? '',
+          'valeurResiduelle': doc['valeurResiduelle'] ?? '',
+          'montantAmortissable': doc['montantAmortissable'] ?? '',
           'duree': doc['duree'] ?? '',
           'taux': doc['taux'] ?? '',
+          'annuiteAmortissement': doc['annuiteAmortissement'] ?? '',
           'ammorAnterieur': doc['ammorAnterieur'] ?? '',
           'photoImob': doc['photoImob'] ?? '',
           'ammorCumul': doc['ammorCumul'] ?? '',
@@ -103,7 +117,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       setState(() {
         utilisateurs = immobilisationsList; // Mise à jour avec la liste des immobilisations
       });
-
     } catch (e) {
       print('Erreur lors de la récupération des immobilisations: $e');
       AwesomeDialog(
@@ -116,6 +129,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       ).show();
     }
   }
+
 
   Future<List<Map<String, String>>> fetchComptes() async {
     try {
@@ -159,7 +173,142 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       print("Erreur lors de la sélection de l'image : $e");
     }
   }
+  Future<void> _setDefaultAffectataire() async {
+    try {
+      // Récupérer l'utilisateur connecté
+      final user = FirebaseAuth.instance.currentUser;
 
+      if (user != null) {
+        // Obtenir les informations de l'utilisateur depuis Firestore
+        final snapshot = await FirebaseFirestore.instance
+            .collection('Utilisateurs')
+            .doc(user.uid)
+            .get();
+
+        if (snapshot.exists) {
+          final data = snapshot.data();
+          final String nom = data?['nom'] ?? 'Nom';
+          final String prenom = data?['prenom'] ?? 'Prénom';
+
+          setState(() {
+            _affectataireController.text = "$nom $prenom"; // Remplit le champ avec le nom complet
+          });
+        }
+      }
+    } catch (e) {
+      print("Erreur lors de la récupération des informations utilisateur : $e");
+    }
+  }
+
+  void calculateMontantAmortissable() {
+    final double valeurOrigine = double.tryParse(_valeurOrigineController.text.trim()) ?? 0.0;
+    final double valeurResiduelle = double.tryParse(_valeurResiduelleController.text.trim()) ?? 0.0;
+
+    final double montantAmortissable = valeurOrigine - valeurResiduelle;
+    setState(() {
+      _montantAmortissableController.text = montantAmortissable.toStringAsFixed(2);
+    });
+  }
+  void calculateTauxAmortissement() {
+    try {
+      // Récupérer la durée de vie depuis le contrôleur
+      final String dureeText = _dureeController.text.trim();
+      if (dureeText.isNotEmpty) {
+        final int dureeVie = int.parse(dureeText);
+
+        if (dureeVie > 0) {
+          // Calculer le taux
+          final double tauxAmortissement = 100 / dureeVie;
+
+          setState(() {
+            _tauxController.text = tauxAmortissement.toStringAsFixed(2); // Formater à 2 décimales
+          });
+        } else {
+          throw Exception("Durée de vie doit être supérieure à 0");
+        }
+      }
+    } catch (e) {
+      AwesomeDialog(
+        context: context,
+        dialogType: DialogType.warning,
+        animType: AnimType.rightSlide,
+        title: 'Erreur',
+        desc: 'Veuillez entrer une durée de vie valide.',
+        btnOkOnPress: () {},
+      ).show();
+    }
+  }
+  void calculateAnnuitesAmortissement() {
+    try {
+      final double valeurOrigine = double.tryParse(_valeurOrigineController.text.trim()) ?? 0.0;
+      final double tauxAmortissement = double.tryParse(_tauxController.text.trim()) ?? 0.0;
+      final String dateMiseEnService = _dateMiseEnServiceController.text.trim();
+
+      if (valeurOrigine > 0 && tauxAmortissement > 0 && dateMiseEnService.isNotEmpty) {
+        // Convertir la date de mise en service
+        final DateTime miseEnServiceDate = DateFormat('dd/MM/yyyy').parse(dateMiseEnService);
+
+        // Trouver le 31 décembre de l'année de mise en service
+        final DateTime finAnnee = DateTime(miseEnServiceDate.year, 12, 31);
+
+        // Calculer le nombre de jours entre la date de mise en service et le 31 décembre
+        final int nombreJours = finAnnee.difference(miseEnServiceDate).inDays + 1;
+
+        // Calculer les Annuités d'amortissement
+        final double annuitesAmortissement =
+            valeurOrigine * (tauxAmortissement / 100) * (nombreJours / 360);
+
+        setState(() {
+          _annuiteAmortissementController.text = annuitesAmortissement.toStringAsFixed(2);
+        });
+      } else {
+        setState(() {
+          _annuiteAmortissementController.text = '0.00';
+        });
+      }
+    } catch (e) {
+      AwesomeDialog(
+        context: context,
+        dialogType: DialogType.warning,
+        animType: AnimType.rightSlide,
+        title: 'Erreur',
+        desc: 'Une erreur est survenue lors du calcul des annuités d’amortissement.',
+        btnOkOnPress: () {},
+      ).show();
+    }
+  }
+  void calculateCumulAmortissements() {
+    final double amortissementsAnterieurs = double.tryParse(_ammorAnterieurController.text.trim()) ?? 0.0;
+    final double annuiteAmortissement = double.tryParse(_annuiteAmortissementController.text.trim()) ?? 0.0;
+
+    final double cumulAmortissements = amortissementsAnterieurs + annuiteAmortissement;
+
+    print('Amortissements Antérieurs: $amortissementsAnterieurs');
+    print('Annuité Amortissement: $annuiteAmortissement');
+    print('Cumul Amortissements: $cumulAmortissements');
+
+    setState(() {
+      _ammorCumulController.text = cumulAmortissements.toStringAsFixed(2);
+    });
+  }
+
+  void calculateValeurNetComptable() {
+    final double valeurOrigine = double.tryParse(_valeurOrigineController.text.trim()) ?? 0.0;
+    final double cumulAmortissements = double.tryParse(_ammorCumulController.text.trim()) ?? 0.0;
+
+    final double valeurNetComptable = valeurOrigine - cumulAmortissements;
+    setState(() {
+      _valeurnetController.text = valeurNetComptable.toStringAsFixed(2);
+    });
+  }
+  void calculateAmortissementsAnterieurs() {
+    // Exemple : récupérer les données des années passées depuis Firestore ou manuellement
+    final List<double> amortissementsPasses = [0, 0, 0]; // Exemple
+    final double sommeAmortissements = amortissementsPasses.fold(0.0, (a, b) => a + b);
+    setState(() {
+      _ammorAnterieurController.text = sommeAmortissements.toStringAsFixed(2);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -235,10 +384,8 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
     );
   }
 
-
   Widget userListWidget() {
-    // Méthode pour rechercher des utilisateurs dans Firestore
-    // Méthode pour rechercher des utilisateurs dans Firestore
+    // Méthode pour rechercher des immobilisations dans Firestore
     Stream<List<QueryDocumentSnapshot>> _searchUser(String searchTerm) async* {
       FirebaseFirestore firestore = FirebaseFirestore.instance;
 
@@ -250,12 +397,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
             .collection('Immobilisations')
             .where('famille', isGreaterThanOrEqualTo: searchTerm)
             .where('famille', isLessThanOrEqualTo: searchTerm + '\uf8ff')
-            .snapshots();
-
-        var factureQuery = firestore
-            .collection('Immobilisations')
-            .where('facture', isGreaterThanOrEqualTo: searchTerm)
-            .where('facture', isLessThanOrEqualTo: searchTerm + '\uf8ff')
             .snapshots();
 
         var nomenclatureQuery = firestore
@@ -272,14 +413,12 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
 
         // Combine les résultats des requêtes
         await for (var familleSnapshot in familleQuery) {
-          var factureSnapshot = await factureQuery.first;
           var nomenclatureSnapshot = await nomenclatureQuery.first;
           var compteGeneralSnapshot = await compteGeneralQuery.first;
 
           // Combine les documents de toutes les requêtes
           var combinedDocs = [
             ...familleSnapshot.docs,
-            ...factureSnapshot.docs,
             ...nomenclatureSnapshot.docs,
             ...compteGeneralSnapshot.docs,
           ];
@@ -290,8 +429,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       }
     }
 
-
-
     void _editUser(Map<String, dynamic> immobilisationData) {
       // Remplir les champs du formulaire avec les données de l'immobilisation
       _compteGeneralController.text = immobilisationData['compteGeneral'] ?? '';
@@ -300,7 +437,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       _emplacementController.text = immobilisationData['emplacement'] ?? '';
       _fournisseurController.text = immobilisationData['fournisseur'] ?? '';
       _valeurOrigineController.text = immobilisationData['valeurOrigine'] ?? '';
-      _factureController.text = immobilisationData['facture'] ?? '';
       _affectataireController.text = immobilisationData['affectataire'] ?? '';
       _dateController.text = immobilisationData['date'] ?? '';
       _dureeController.text = immobilisationData['duree'] ?? '';
@@ -323,7 +459,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       final String? photoUrl = immobilisationData['photoImob'];
       if (photoUrl != null && photoUrl.isNotEmpty) {
         try {
-          // Récupérer l'image depuis l'URL et l'afficher
           setState(() {
             _selectedImage = null; // Réinitialise l'image sélectionnée
             _photoUrl = photoUrl; // URL de la photo
@@ -332,13 +467,11 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
           print("Erreur lors du chargement de l'image : $e");
         }
       } else {
-        // Pas d'image associée
         setState(() {
           _photoUrl = null;
         });
       }
     }
-
 
     return Padding(
       padding: const EdgeInsets.all(16.0),
@@ -395,7 +528,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                         DataColumn(label: Text('Emplacement', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                         DataColumn(label: Text('Fournisseur', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                         DataColumn(label: Text('Valeur d\'Origine', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
-                        DataColumn(label: Text('N° Facture', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                         DataColumn(label: Text('Affectataire', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                         DataColumn(label: Text('Date Acquisition', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                         DataColumn(label: Text('Durée Annuelle', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
@@ -425,7 +557,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                           DataCell(Text(immobilisationData['emplacement'] ?? '', style: TextStyle(fontSize: 14))),
                           DataCell(Text(immobilisationData['fournisseur'] ?? '', style: TextStyle(fontSize: 14))),
                           DataCell(Text(immobilisationData['valeurOrigine'] ?? '', style: TextStyle(fontSize: 14))),
-                          DataCell(Text(immobilisationData['facture'] ?? '', style: TextStyle(fontSize: 14))),
                           DataCell(Text(immobilisationData['affectataire'] ?? '', style: TextStyle(fontSize: 14))),
                           DataCell(Text(immobilisationData['date'] ?? '', style: TextStyle(fontSize: 14))),
                           DataCell(Text(immobilisationData['duree'] ?? '', style: TextStyle(fontSize: 14))),
@@ -498,16 +629,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
             Row(
               children: [
                 Expanded(
-                  child: _buildTextField(
-                    _imobIdController,
-                    'ID',
-                    Icons.perm_identity,
-                    keyboardType: TextInputType.number,
-                    readOnly: true,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
                   child: FutureBuilder<List<Map<String, String>>>(
                     future: fetchComptes(), // Récupération des comptes depuis Firestore
                     builder: (context, snapshot) {
@@ -523,8 +644,10 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
 
                       var comptes = snapshot.data!;
                       return DropdownButtonFormField<String>(
+                        isExpanded: true, // Permet au champ de s'étendre selon les caractères
                         decoration: InputDecoration(
                           labelText: 'N° Compte Général',
+                          labelStyle: const TextStyle(color: Colors.black),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12.0),
                           ),
@@ -542,9 +665,19 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                         items: comptes.map((compte) {
                           return DropdownMenuItem<String>(
                             value: compte['compteGeneral'],
-                            child: Text(
-                              "${compte['compteGeneral']} - ${compte['intituleCompte']}",
-                              style: const TextStyle(fontSize: 14),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.account_balance, color: Colors.blue), // Icône pour chaque item
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    "${compte['compteGeneral']} - ${compte['intituleCompte']}",
+                                    style: const TextStyle(fontSize: 14),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis, // Gestion du débordement
+                                  ),
+                                ),
+                              ],
                             ),
                           );
                         }).toList(),
@@ -562,12 +695,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     readOnly: false,
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            // Ligne 2 : Structure, Emplacement, Affectataire
-            Row(
-              children: [
+                const SizedBox(width: 10),
                 Expanded(
                   child: _buildTextField(
                     _familleController,
@@ -590,7 +718,12 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     Icons.layers,
                   ),
                 ),
-                const SizedBox(width: 10),
+              ],
+            ),
+            const SizedBox(height: 20),
+            // Ligne 2 : Structure, Emplacement, Affectataire
+            Row(
+              children: [
                 Expanded(
                   child: _buildTextField(
                     _emplacementController,
@@ -599,12 +732,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     readOnly: false,
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            // Ligne 3 : Date d'acquisition, Fournisseur, N° Facture
-            Row(
-              children: [
+                const SizedBox(width: 10),
                 Expanded(
                   child: _buildTextField(
                     _affectataireController,
@@ -624,18 +752,23 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: _buildTextField(
-                    _factureController,
-                    'N° Facture',
-                    Icons.receipt,
-                    keyboardType: TextInputType.number,
-                    readOnly: false,
+                  child: _buildDropdownField(
+                    'État',
+                    _etatList,
+                    _selectedEtat,
+                        (String? newValue) {
+                      setState(() {
+                        _selectedEtat = newValue!;
+                      });
+                    },
+                    Icons.info_outline,
                   ),
                 ),
+
               ],
             ),
             const SizedBox(height: 20),
-            // Ligne 4 : Valeur d'origine, Méthode d'amortissement
+            // Ligne 3 : Date d'acquisition, Fournisseur, N° Facture
             Row(
               children: [
                 Expanded(
@@ -648,12 +781,56 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: _buildTextField(
-                    _valeurOrigineController,
-                    "Valeur d'origine",
-                    Icons.attach_money,
+                  child: buildDatePicker(
+                    _dateMiseEnServiceController,
+                    "Date de mise en service",
+                    Icons.date_range,
+                    context,
+                    onDateSelected: () {
+                      calculateAnnuitesAmortissement();
+                    },
+                  ),
+                ),
+
+              ],
+            ),
+            const SizedBox(height: 20),
+            // Ligne 4 : Valeur d'origine, Méthode d'amortissement
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _valeurOrigineController,
+                    onChanged: (value) {
+                      calculateMontantAmortissable();
+                      calculateAnnuitesAmortissement();
+                      calculateValeurNetComptable();
+                    },
+                    decoration: InputDecoration(
+                      labelText: "Valeur d'origine",
+                      prefixIcon: const Icon(Icons.attach_money, color: Colors.blue),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12.0),
+                      ),
+                    ),
                     keyboardType: TextInputType.number,
-                    readOnly: false,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller:  _valeurResiduelleController,
+                    onChanged: (value) {
+                      calculateMontantAmortissable();
+                    },
+                    decoration: InputDecoration(
+                      labelText: "Valeur résiduelle",
+                      prefixIcon: const Icon(Icons.attach_money, color: Colors.blue),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12.0),
+                      ),
+                    ),
+                    keyboardType: TextInputType.number,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -670,6 +847,24 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     Icons.account_balance_wallet,
                   ),
                 ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _dureeController,
+                    onChanged: (value) {
+                      calculateTauxAmortissement();
+                      calculateAnnuitesAmortissement();
+                    },
+                    decoration: InputDecoration(
+                      labelText: "Durée annuelle",
+                      prefixIcon: const Icon(Icons.timer, color: Colors.blue),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12.0),
+                      ),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 20),
@@ -677,24 +872,33 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
             Row(
               children: [
                 Expanded(
-                  child: _buildTextField(
-                    _dureeController,
-                    'Durée annuelle',
-                    Icons.timer,
+                  child: TextField(
+                    controller: _tauxController,
+                    onChanged: (value) {
+                      calculateAnnuitesAmortissement();
+                    },
+                    decoration: InputDecoration(
+                      labelText: 'Taux Amortissement (%)',
+                      prefixIcon: const Icon(Icons.percent, color: Colors.blue),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12.0),
+                      ),
+                    ),
                     keyboardType: TextInputType.number,
-                    readOnly: false,
+                    readOnly: true,
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: _buildTextField(
-                    _tauxController,
-                    'Taux (%)',
-                    Icons.percent,
+                    _montantAmortissableController,
+                    "Montant amortissable",
+                    Icons.calculate,
                     keyboardType: TextInputType.number,
-                    readOnly: false,
+                    readOnly: true, // Lecture seule
                   ),
                 ),
+
               ],
             ),
             const SizedBox(height: 20),
@@ -720,6 +924,16 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     readOnly: false,
                   ),
                 ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildTextField(
+                    _ammorCumulController,
+                    'Amortissement cumul',
+                    Icons.bar_chart,
+                    keyboardType: TextInputType.number,
+                    readOnly: false,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 20),
@@ -728,11 +942,11 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
               children: [
                 Expanded(
                   child: _buildTextField(
-                    _ammorCumulController,
-                    'Amortissement cumul',
-                    Icons.bar_chart,
+                    _annuiteAmortissementController,
+                    "Annuité d’amortissement",
+                    Icons.timeline,
                     keyboardType: TextInputType.number,
-                    readOnly: false,
+                    readOnly: true, // Lecture seule
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -745,20 +959,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                     readOnly: false,
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _buildDropdownField(
-                    'État',
-                    _etatList,
-                    _selectedEtat,
-                        (String? newValue) {
-                      setState(() {
-                        _selectedEtat = newValue!;
-                      });
-                    },
-                    Icons.info_outline,
-                  ),
-                ),
               ],
             ),
           ],
@@ -766,7 +966,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       ),
     );
   }
-
 
   Future<void> generateAndDownloadImmobilisationCard({
     required BuildContext context,
@@ -796,7 +995,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       // Récupération de docId
       final String docId = immobilisationData['docId'] ?? "ID inconnu";
 
-      // Charger le logo en tant qu'Uint8List
+      // Charger le logo en tant que Uint8List
       final ByteData logoData = await rootBundle.load(logoPath);
       final Uint8List logoBytes = logoData.buffer.asUint8List();
 
@@ -838,7 +1037,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                             pw.Text(
                               'AKM-AUDIT & CONTROLE',
                               style: pw.TextStyle(
-                                fontSize: 20,
+                                fontSize: 18,
                                 fontWeight: pw.FontWeight.bold,
                                 color: PdfColors.teal,
                               ),
@@ -859,11 +1058,35 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                             ),
                           ],
                         ),
-                        pw.BarcodeWidget(
-                          data: qrCodeData,
-                          barcode: pw.Barcode.qrCode(),
-                          width: 80,
-                          height: 80,
+                        pw.Stack(
+                          alignment: pw.Alignment.center,
+                          children: [
+                            // QR code avec correction d'erreur
+                            pw.BarcodeWidget(
+                              data: qrCodeData,
+                              barcode: pw.Barcode.qrCode(
+                                errorCorrectLevel: pw.BarcodeQRCorrectionLevel.high, // Correction d'erreur élevée
+                              ),
+                              width: 120,
+                              height: 120,
+                            ),
+                            // Logo centré avec bordure blanche
+                            pw.Container(
+                              width: 40,
+                              height: 40,
+                              decoration: pw.BoxDecoration(
+                                shape: pw.BoxShape.circle,
+                                color: PdfColors.white, // Bordure blanche
+                              ),
+                              child: pw.Padding(
+                                padding: pw.EdgeInsets.all(4),
+                                child: pw.Image(
+                                  pw.MemoryImage(logoBytes),
+                                  fit: pw.BoxFit.contain,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -935,57 +1158,34 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       TextEditingController controller,
       String label,
       IconData prefixIcon,
-      BuildContext context, // Ajouter le context pour le showDatePicker
-      ) {
+      BuildContext context, {
+        VoidCallback? onDateSelected, // Ajoutez un callback optionnel
+      }) {
     return TextField(
       controller: controller,
-      style: const TextStyle(fontSize: 16, color: Colors.black87),
-      readOnly: true, // Rendre le TextField en lecture seule pour ouvrir le sélecteur de date
+      readOnly: true,
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: const TextStyle(
-          color: Colors.grey,
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
-        ),
+        prefixIcon: Icon(prefixIcon, color: Colors.blue),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(15.0),
-          borderSide: BorderSide(color: Colors.teal, width: 2.0), // Couleur de la bordure
+          borderRadius: BorderRadius.circular(12.0),
         ),
-        focusedBorder: OutlineInputBorder(
-          borderSide: BorderSide(color: Colors.teal, width: 2.0),
-          borderRadius: BorderRadius.circular(15.0),
-        ),
-        filled: true,
-        fillColor: Colors.teal.shade50, // Couleur de fond claire
-        prefixIcon: Icon(prefixIcon, color: Colors.teal),
-        contentPadding: const EdgeInsets.symmetric(vertical: 15.0, horizontal: 12.0),
       ),
       onTap: () async {
-        // Ouvrir le sélecteur de date lors de l'appui sur le TextField
         DateTime? pickedDate = await showDatePicker(
           context: context,
           initialDate: DateTime.now(),
           firstDate: DateTime(1900),
-          lastDate: DateTime(2101),
-          builder: (BuildContext context, Widget? child) {
-            return Theme(
-              data: ThemeData.light().copyWith(
-                primaryColor: Colors.teal, // Couleur de la barre de sélection
-                hintColor: Colors.teal,
-                buttonTheme: ButtonThemeData(textTheme: ButtonTextTheme.primary),
-              ),
-              child: child!,
-            );
-          },
+          lastDate: DateTime(2100),
         );
         if (pickedDate != null) {
-          // Formater la date choisie et l'afficher dans le TextField
           controller.text = DateFormat('dd/MM/yyyy').format(pickedDate);
+          if (onDateSelected != null) onDateSelected(); // Appeler le callback
         }
       },
     );
   }
+
 // Frame 2: Boutons Ajouter, Modifier, Supprimer
   Widget _buildActionButtons(BuildContext context) {
     return Card(
@@ -1099,8 +1299,6 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
                 minimumSize: const Size(150, 50),
               ),
             ),
-
-
           ],
         ),
       ),
@@ -1110,7 +1308,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
 
   void _addImmobilisationToFirestore(BuildContext context) async {
     setState(() {
-      isLoading = true; // Active le loader
+      isLoading = true;
     });
 
     final String imobId = _imobIdController.text.trim();
@@ -1120,28 +1318,24 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
     final String emplacement = _emplacementController.text.trim();
     final String fournisseur = _fournisseurController.text.trim();
     final String valeurOrigine = _valeurOrigineController.text.trim();
-    final String facture = _factureController.text.trim();
     final String affectataire = _affectataireController.text.trim();
     final String date = _dateController.text.trim();
+    final String dateMiseEnService = _dateMiseEnServiceController.text.trim(); // Nouveau champ
+    final String valeurResiduelle = _valeurResiduelleController.text.trim(); // Nouveau champ
     final String duree = _dureeController.text.trim();
     final String taux = _tauxController.text.trim();
+    final String montantAmortissable = _montantAmortissableController.text.trim(); // Nouveau champ
+    final String annuiteAmortissement = _annuiteAmortissementController.text.trim(); // Nouveau champ
     final String ammorAnterieur = _ammorAnterieurController.text.trim();
     final String ammorCumul = _ammorCumulController.text.trim();
     final String ammorExercice = _ammorExerciceController.text.trim();
     final String valeurNet = _valeurnetController.text.trim();
 
-    // Formater la date actuelle
-    final String formattedDate =
-    DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
+    final String formattedDate = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
 
-    if (imobId.isEmpty ||
-        compteGeneral.isEmpty ||
-        famille.isEmpty ||
-        nomenclature.isEmpty ||
-        emplacement.isEmpty ||
-        fournisseur.isEmpty) {
+    if (imobId.isEmpty || compteGeneral.isEmpty || famille.isEmpty || nomenclature.isEmpty) {
       setState(() {
-        isLoading = false; // Désactive le loader
+        isLoading = false;
       });
 
       AwesomeDialog(
@@ -1158,16 +1352,15 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
     }
 
     try {
-      // Vérifier si un document avec le même ImobId existe déjà
+      // Vérifier la duplication
       final QuerySnapshot existingImmobilisation = await FirebaseFirestore.instance
           .collection('Immobilisations')
           .where('ImobId', isEqualTo: imobId)
           .get();
 
       if (existingImmobilisation.docs.isNotEmpty) {
-        // Si un document existe déjà avec le même ImobId, afficher un message d'erreur
         setState(() {
-          isLoading = false; // Désactive le loader
+          isLoading = false;
         });
 
         AwesomeDialog(
@@ -1183,17 +1376,17 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
         return;
       }
 
-      // Gestion de l'image de profil
+      // Gestion de l'image
       String? photoImob;
       if (_selectedImage != null) {
         final storageRef =
         FirebaseStorage.instance.ref('PhotosImmobilisations/$imobId.jpg');
-        await storageRef.putData(_selectedImage!); // Utiliser putData pour Uint8List
+        await storageRef.putData(_selectedImage!);
         photoImob = await storageRef.getDownloadURL();
       }
 
-      DocumentReference docRef =
-      FirebaseFirestore.instance.collection('Immobilisations').doc();
+      // Données à sauvegarder
+      final DocumentReference docRef = FirebaseFirestore.instance.collection('Immobilisations').doc();
       final Map<String, dynamic> immobilisation = {
         'docId': docRef.id,
         'ImobId': imobId,
@@ -1204,11 +1397,14 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
         'emplacement': emplacement,
         'fournisseur': fournisseur,
         'valeurOrigine': valeurOrigine,
-        'facture': facture,
         'affectataire': affectataire,
         'date': date,
+        'dateMiseEnService': dateMiseEnService, // Nouveau champ
+        'valeurResiduelle': valeurResiduelle,   // Nouveau champ
         'duree': duree,
         'taux': taux,
+        'montantAmortissable': montantAmortissable, // Nouveau champ
+        'annuiteAmortissement': annuiteAmortissement, // Nouveau champ
         'ammorAnterieur': ammorAnterieur,
         'ammorCumul': ammorCumul,
         'ammorExercice': ammorExercice,
@@ -1220,7 +1416,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       await docRef.set(immobilisation);
 
       setState(() {
-        isLoading = false; // Désactive le loader
+        isLoading = false;
       });
 
       AwesomeDialog(
@@ -1237,7 +1433,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       ).show();
     } catch (e) {
       setState(() {
-        isLoading = false; // Désactive le loader
+        isLoading = false;
       });
 
       AwesomeDialog(
@@ -1253,6 +1449,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
     }
   }
 
+
   Future<void> _deleteImmobilisation(BuildContext context) async {
     setState(() {
       isLoading = true; // Active le loader
@@ -1262,6 +1459,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       context: context,
       dialogType: DialogType.question,
       title: 'Confirmation',
+      width: 600,
       desc: 'Êtes-vous sûr de vouloir supprimer cette immobilisation ?',
       btnCancelOnPress: () {
         setState(() {
@@ -1337,27 +1535,24 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
     final String emplacement = _emplacementController.text.trim();
     final String fournisseur = _fournisseurController.text.trim();
     final String valeurOrigine = _valeurOrigineController.text.trim();
-    final String facture = _factureController.text.trim();
     final String affectataire = _affectataireController.text.trim();
     final String date = _dateController.text.trim();
+    final String dateMiseEnService = _dateMiseEnServiceController.text.trim();
+    final String valeurResiduelle = _valeurResiduelleController.text.trim();
     final String duree = _dureeController.text.trim();
     final String taux = _tauxController.text.trim();
+    final String montantAmortissable = _montantAmortissableController.text.trim();
+    final String annuiteAmortissement = _annuiteAmortissementController.text.trim();
     final String ammorAnterieur = _ammorAnterieurController.text.trim();
     final String ammorCumul = _ammorCumulController.text.trim();
     final String ammorExercice = _ammorExerciceController.text.trim();
     final String valeurNet = _valeurnetController.text.trim();
 
-    final String formattedDate =
-    DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
+    // Formater la date de dernière modification
+    final String formattedDate = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
 
     // Vérifier que les champs essentiels ne sont pas vides
-    if (docId.isEmpty ||
-        imobId.isEmpty ||
-        compteGeneral.isEmpty ||
-        famille.isEmpty ||
-        nomenclature.isEmpty ||
-        emplacement.isEmpty ||
-        fournisseur.isEmpty) {
+    if (docId.isEmpty || imobId.isEmpty || compteGeneral.isEmpty || famille.isEmpty || nomenclature.isEmpty) {
       AwesomeDialog(
         context: context,
         dialogType: DialogType.warning,
@@ -1375,13 +1570,12 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       isLoading = true; // Active le loader
     });
 
-    // Gestion de l'image de profil
-    String? photoImob;
     try {
+      // Gestion de l'image (vérifier si une nouvelle image a été sélectionnée)
+      String? photoImob;
       if (_selectedImage != null) {
-        // Référence à l'image dans Firebase Storage
-        final storageRef =
-        FirebaseStorage.instance.ref('PhotosImmobilisations/$imobId.jpg');
+        // Référence au stockage Firebase
+        final storageRef = FirebaseStorage.instance.ref('PhotosImmobilisations/$imobId.jpg');
 
         // Supprimer l'ancienne image si elle existe
         try {
@@ -1403,7 +1597,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       }
 
       // Construire les données à mettre à jour
-      final Map<String, dynamic> immobilisation = {
+      final Map<String, dynamic> updatedData = {
         'ImobId': imobId,
         'compteGeneral': compteGeneral,
         'famille': famille,
@@ -1411,11 +1605,14 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
         'emplacement': emplacement,
         'fournisseur': fournisseur,
         'valeurOrigine': valeurOrigine,
-        'facture': facture,
         'affectataire': affectataire,
         'date': date,
+        'dateMiseEnService': dateMiseEnService,
+        'valeurResiduelle': valeurResiduelle,
         'duree': duree,
         'taux': taux,
+        'montantAmortissable': montantAmortissable,
+        'annuiteAmortissement': annuiteAmortissement,
         'ammorAnterieur': ammorAnterieur,
         'ammorCumul': ammorCumul,
         'ammorExercice': ammorExercice,
@@ -1425,10 +1622,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
       };
 
       // Mettre à jour les données dans Firestore
-      await FirebaseFirestore.instance
-          .collection('Immobilisations')
-          .doc(docId)
-          .update(immobilisation);
+      await FirebaseFirestore.instance.collection('Immobilisations').doc(docId).update(updatedData);
 
       setState(() {
         isLoading = false; // Désactive le loader
@@ -1440,7 +1634,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
         dialogType: DialogType.success,
         animType: AnimType.rightSlide,
         title: 'Succès',
-        desc: 'Données mises à jour avec succès pour le document',
+        desc: 'Données mises à jour avec succès pour l\'immobilisation $imobId.',
         btnOkOnPress: () {
           _clearFields(); // Réinitialiser les champs après succès
         },
@@ -1516,7 +1710,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
         fillColor: readOnly
             ? Colors.grey[200] // Couleur grisée si le champ est en lecture seule
             : Colors.white, // Couleur blanche sinon
-        prefixIcon: Icon(prefixIcon, color: Colors.black),
+        prefixIcon: Icon(prefixIcon, color: Colors.blue),
       ),
     );
   }
@@ -1577,7 +1771,7 @@ class _GestionImmobilisationPageState extends State<GestionImmobilisationPage> {
           value: value,
           child: Row(
             children: [
-              Icon(icon, color: Colors.black), // Icône pour chaque item
+              Icon(icon, color: Colors.blue), // Icône pour chaque item
               const SizedBox(width: 8),
               Text(
                 value,

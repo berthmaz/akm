@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import 'package:gestionammortissemet/GestionCompte.dart';
+import 'package:awesome_dialog/awesome_dialog.dart';
 import 'package:gestionammortissemet/Scanneur.dart';
 import 'AjouterImmobilisation.dart';
 import 'GestionUtilisateur.dart';
@@ -173,9 +174,9 @@ class _AcceuilPageState extends State<AcceuilPage> {
                     ),
                   ),
                   Text(
-                    email,
+                   email,
                     style: const TextStyle(
-                      color: Colors.yellow,
+                      color: Colors.orange,
                       fontSize: 14,
                     ),
                   ),
@@ -265,9 +266,31 @@ class _AcceuilPageState extends State<AcceuilPage> {
                                 ),
                               ),
                               onPressed: () {
-                                // Action de déconnexion
-                                print("Déconnexion...");
-                                Navigator.of(context).pop();
+                                // Afficher la boîte de dialogue de déconnexion
+                                AwesomeDialog(
+                                  context: context,
+                                  dialogType: DialogType.warning, // Type de dialogue (avertissement)
+                                  animType: AnimType.bottomSlide, // Animation
+                                  title: 'Déconnexion',
+                                  width: 600,
+                                  desc: 'Êtes-vous sûr de vouloir vous déconnecter ?',
+                                  btnCancelOnPress: () {
+                                    print("Déconnexion annulée");
+                                  },
+                                  btnOkOnPress: () async {
+                                    print("Déconnexion confirmée");
+                                    try {
+                                      await FirebaseAuth.instance.signOut(); // Déconnecter l'utilisateur
+                                      print("Utilisateur déconnecté");
+                                      // Rediriger vers l'écran de connexion ou une autre page
+                                      Navigator.of(context).pushReplacementNamed('/login'); // Remplacez par votre route de connexion
+                                    } catch (e) {
+                                      print("Erreur lors de la déconnexion: $e");
+                                    }
+                                  },
+                                  btnCancelText: 'Non',
+                                  btnOkText: 'Oui',
+                                ).show();
                               },
                               child: const Text(
                                 'Se Déconnecter',
